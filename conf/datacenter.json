@@ -1,0 +1,346 @@
+{
+  "global" : {
+    "mailaddress" : "root@localhost"
+  },
+  "template" : {
+    "shutdown_ssh_ipmi" : {
+      "shutdown" : {
+        "host": "%host%",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "shutdown -h now",
+        "timeout": "300",
+        "retry": "1",
+        "status" : "ipmistatus",
+        "on_failure": "shutdown_force"
+      },
+      "shutdown_force" : {
+        "host": "%ipmihost%",
+        "module": "ipmi",
+        "user": "%ipmiuser%",
+        "passwd": "%ipmipasswd%",
+        "cmd": "chassis power soft",
+        "timeout": "10",
+        "status" : "ipmistatus",
+        "on_failure": "fence"
+      },
+      "fence" : {
+        "host": "%ipmihost%",
+        "module": "ipmi",
+        "user": "%ipmiuser%",
+        "passwd": "%ipmipasswd%",
+        "cmd": "chassis power off",
+        "timeout": "10",
+        "status" : "ipmistatus",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Shutdown failed on %host%",
+        "subject": "[DATACENTER] Shutdown failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      },
+      "ipmistatus" : {
+        "host": "%ipmihost%",
+        "module": "ipmi",
+        "user": "%ipmiuser%",
+        "passwd": "%ipmipasswd%",
+        "cmd": "chassis power status",
+        "timeout": "30",
+        "retry": "10",
+        "target" : "Chassis Power is off"
+      }
+    },
+    "shutdown_ssh_pacemaker" : {
+      "shutdown" : {
+        "host": "%host%",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "shutdown -h now",
+        "timeout": "60",
+        "retry": "1",
+        "exec": "pcs_unmanage",
+        "wait": "300",
+        "on_failure": "notify"
+      },
+      "pcs_unmanage" : {
+        "sshhost": "pacemaker",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "pcs resource unmanage %resource%",
+        "timeout": "60",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Shutdown and PCS unmanage failed on %host%",
+        "subject": "[DATACENTER] Shutdown and PCS unmanage failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "startup_ssh_pacemaker" : {
+      "startup" : {
+        "sshhost": "pacemaker",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "pcs resource manage %resource%",
+        "retry": "1",
+        "exec": "pcs_cleanup",
+        "timeout": "60",
+        "on_failure": "notify"
+      },
+      "pcs_cleanup" : {
+        "sshhost": "pacemaker",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "pcs resource cleanup %resource%",
+        "retry": "5",
+        "timeout": "60",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Startup and PCS cleanup failed for %host%",
+        "subject": "[DATACENTER] Startup and PCS cleanup failed for %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "shutdown_ovirt" : {
+      "shutdown" : {
+        "sshhost": "ovirt-engine",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/root/bin/vmctl -n %resource% --shutdown",
+        "timeout": "360",
+        "retry": "1",
+        "on_failure": "shutdown_force"
+      },
+      "shutdown_force" : {
+        "sshhost": "ovirt-engine",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/root/vmctl -n %resource% --poweroff",
+        "timeout": "360",
+        "retry": "1",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Shutdown failed on oVirt host %host%",
+        "subject": "[DATACENTER] Shutdown failed on oVirt host %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "ovirt_maintenance_global" : {
+      "shutdown" : {
+        "host": "%host%",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/usr/sbin/hosted-engine --set-maintenance --mode=global",
+        "timeout": "60",
+        "retry": "1",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] oVirt set global maintenance failed on %host%",
+        "subject": "[DATACENTER] oVirt set global maintenance failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "startup_ovirt_engine" : {
+      "startup" : {
+        "sshhost": "ovirt-node-01",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/usr/sbin/hosted-engine --vm-start",
+        "timeout": "360",
+        "status": "pinghost",
+        "wait": "300",
+        "retry": "1",
+        "on_failure": "notify"
+      },
+      "pinghost" : {
+        "host": "%resource%",
+        "module": "ping",
+        "timeout": "30",
+        "retry": "20",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Startup oVirt engine failed on %host%",
+        "subject": "[DATACENTER] Startup oVirt engine failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "startup_ovirt" : {
+      "startup" : {
+        "sshhost": "ovirt-engine",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/root/bin/vmctl -n %resource% --start",
+        "timeout": "360",
+        "retry": "1",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Startup failed of oVirt host %host%",
+        "subject": "[DATACENTER] Startup failed of oVirt host %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "ovirt_maintenance_none" : {
+      "startup" : {
+        "host": "%host%",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "/usr/sbin/hosted-engine --set-maintenance --mode=none",
+        "timeout": "60",
+        "retry": "1",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] oVirt unset global maintenance failed on %host%",
+        "subject": "[DATACENTER] oVirt unset global maintenance failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "shutdown_ssh" : {
+      "shutdown" : {
+        "host": "%host%",
+        "module": "ssh",
+        "user": "root",
+        "passwd": "None",
+        "cmd": "shutdown -h now",
+        "timeout": "60",
+        "retry": "1",
+        "wait": "300",
+        "on_failure": "notify"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Shutdown failed on %host%",
+        "subject": "[DATACENTER] Shutdown failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    },
+    "startup_ipmi" : {
+      "startup" : {
+        "host": "%ipmihost%",
+        "module": "ipmi",
+        "user": "%ipmiuser%",
+        "passwd": "%ipmipasswd%",
+        "cmd": "chassis power on",
+        "timeout": "20",
+        "retry": "1",
+        "wait": "300",
+        "status" : "ipmistatus",
+        "on_failure": "notify"
+      },
+      "ipmistatus" : {
+        "host": "%ipmihost%",
+        "module": "ipmi",
+        "user": "%ipmiuser%",
+        "passwd": "%ipmipasswd%",
+        "cmd": "chassis power status",
+        "timeout": "30",
+        "retry": "10",
+        "target" : "Chassis Power is on"
+      },
+      "notify" : {
+        "host": "%host%",
+        "module": "notify",
+        "recipients": "root@localhost",
+        "message": "[%date%] Startup failed on %host%",
+        "subject": "[DATACENTER] Startup failed on %host%",
+        "timeout": "30",
+        "retry": "1"
+      }
+    }
+  },
+  "action" : {
+    "shutdown" : [
+      {
+        "node-01"       : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "node-01-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "node-02"       : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "node-02-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "node-03"       : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "ovirt-vm-01"   : { "template" : "shutdown_ovirt", "resource" : "ovirt-vm-01" },
+        "ovirt-vm-02"   : { "template" : "shutdown_ovirt", "resource" : "ovirt-vm-02" },
+        "ovirt-vm-03"   : { "template" : "shutdown_ovirt", "resource" : "ovirt-vm-03" }
+      },
+      {
+        "ovirt-node-01" : { "template" : "ovirt_maintenance_global" }
+      },
+      {
+        "ovirt-engine"  : { "template" : "shutdown_ssh" }
+      },
+      {
+        "ovirt-node-01" : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "ovirt-node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "ovirt-node-02" : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "ovirt-node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "ovirt-node-03" : { "template" : "shutdown_ssh_ipmi", "ipmihost" : "ovirt-node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" }
+      }
+    ],
+    "startup" : [
+      {
+        "ovirt-node-01" : { "template" : "startup_ipmi", "ipmihost" : "ovirt-node-01-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "ovirt-node-02" : { "template" : "startup_ipmi", "ipmihost" : "ovirt-node-02-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "ovirt-node-03" : { "template" : "startup_ipmi", "ipmihost" : "ovirt-node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" }
+      },
+      {
+        "ovirt-node-01" : { "template" : "ovirt_maintenance_none" }
+      },
+      {
+        "ovirt-node-01" : { "template" : "startup_ovirt_engine" }
+      },
+      {
+        "ovirt-vm-01"   : { "template" : "startup_ssh_pacemaker", "resource" : "ovirt-vm-01" },
+        "ovirt-vm-02"   : { "template" : "startup_ssh_pacemaker", "resource" : "ovirt-vm-02" },
+        "ovirt-vm-03"   : { "template" : "startup_ssh_pacemaker", "resource" : "ovirt-vm-03" },
+        "node-01"       : { "template" : "startup_ipmi", "ipmihost" : "node-01-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "node-02"       : { "template" : "startup_ipmi", "ipmihost" : "node-02-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" },
+        "node-03"       : { "template" : "startup_ipmi", "ipmihost" : "node-03-ipmi", "ipmiuser" : "admin", "ipmipasswd" : "admin" }
+      }
+    ]
+  }
+}

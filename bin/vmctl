@@ -1,0 +1,193 @@
+#! /usr/bin/python
+
+from ovirtsdk.api import API
+from ovirtsdk.xml import params
+import ConfigParser
+import getopt
+import os
+import time
+import sys
+
+
+class ovirtVMctl:
+
+   VERSION =       params.Version(major='3', minor='0')
+ 
+   DC_NAME =       'Default'
+   CLUSTER_NAME =  'Default'
+   HOST_NAME =     'my_host'
+   STORAGE_NAME =  'my_storage'
+   EXPORT_NAME =   'my_export'
+   TSTAMP =        time.strftime('%Y%m%d%H%M%S')
+   EXPORT =        None
+   api =           None
+
+   def __init__(self, url, username, password):
+      self.api = API(url=url, username=username, password=password, insecure=True)
+
+   def power_action(self, action, name=None):
+      vmmatch = False
+      vms = self.api.vms.list()
+      rc = 0
+      if (action == 'start'): target_status = "up"
+      else:                   target_status = "down"
+      for vm in vms:
+         if (vm.name != 'HostedEngine'):
+            if (not name or (name and vm.name == name)):
+               vmmatch = True
+               vmname = vm.name
+               try:
+                  if (vm.status.state == target_status):
+                     print "VM %s is %s" % (vmname, vm.status.state)
+                     continue
+                  print "Executing %s on VM %s" % (action, vmname)
+                  if   (action == 'start'):    vm.start()
+                  elif (action == 'shutdown'): vm.shutdown()
+                  elif (action == 'suspend'):  vm.suspend()
+                  elif (action == 'poweroff'): vm.stop()
+                  print("Waiting for %s to finish..." % action)
+                  while self.api.vms.get(name=vmname).status.state != target_status:
+                     time.sleep(10)
+               except Exception as e:
+                  print 'Failed to %s VM %s:\n%s' % (vmname, action, str(e))
+                  rc = 10
+      if (name and not vmmatch):
+         print "WARNING: no match for vm %s" % name
+      return rc
+
+   def export(self, name=None):
+      vmmatch = False
+      vms = self.api.vms.list()
+      for vm in vms:
+         if (vm.name != 'HostedEngine'):
+            if (not name or (name and vm.name == name)):
+                print "Exporting VM %s" % vm.name
+                self.export_vm(vm)
+                vmmatch = True
+      if (name and not vmmatch):
+         print "WARNING: no match for vm %s" % name
+      return 0
+
+   def export_vm(self, vm):
+      SNAPSHOT_NAME = '%s_snapshot_%s' % (vm.name.replace('-','_'), self.TSTAMP)
+      try:
+         cluster = self.api.clusters.get(id=vm.cluster.id)
+         dc = self.api.datacenters.get(id=cluster.data_center.id)
+         for sd in dc.storagedomains.list():
+            if sd.type_ == "export":
+               export = sd
+ 
+         if not export:
+            print("Export domain required, and none found.")
+            return 1
+
+         print "Creating snapshot %s" % SNAPSHOT_NAME
+         self.api.vms.get(vm.name).snapshots.add(params.Snapshot(description=SNAPSHOT_NAME, vm=self.api.vms.get(vm.name), persist_memorystate=True))
+         print 'Waiting for Snapshot creation to finish'
+         snap = self.api.vms.get(vm.name).snapshots.list(description=SNAPSHOT_NAME)[0]
+         while not snap:
+            time.sleep(1)
+            snap = self.api.vms.get(vm.name).snapshots.list(description=SNAPSHOT_NAME)[0]
+         snap_id = snap.get_id()
+         while self.api.vms.get(vm.name).snapshots.get(id=snap_id).snapshot_status == 'locked':
+            time.sleep(1)
+
+         newname = "%s-%s" % (vm.name, self.TSTAMP)
+         print("Creating new VM based on snapshot %s [id: %s]" % (SNAPSHOT_NAME,snap_id))
+         snapshots = params.Snapshots(snapshot=[params.Snapshot(id=snap_id)])
+         self.api.vms.add(params.VM(name=newname, snapshots=snapshots, cluster=cluster, template=self.api.templates.get(name="Blank")))
+  
+         # Wait for create to finish
+         print("Waiting for creation to finish...")
+         while self.api.vms.get(name=newname).status.state == "image_locked":
+            time.sleep(10)
+
+         print("Exporting cloned VM to export domain...")
+         self.api.vms.get(name=newname).export(params.Action(storage_domain=export))
+
+         print("Waiting for export to finish...")
+         while self.api.vms.get(name=newname).status.state == "image_locked":
+            time.sleep(10)
+  
+         print("Deleting temporary VM...")
+         self.api.vms.get(name=newname).delete()
+      except Exception as e:
+         print 'Failed to Create snapshot %s:\n%s' % (SNAPSHOT_NAME, str(e))
+
+
+__HELP__="""vmctl
+Usage: vmctl [OPTION]...
+
+Options:
+  --help|-h                         display this help and exit.
+  --export|-e                       export the named VMs or all the VMs if --name is omitted
+  --name=|-n <VM name>              VM name to process
+  --poweroff                        poweroff (stop) the VM
+  --shutdown                        shutdown the VM
+  --start                           start the VM
+  --suspend                         suspend the VM
+
+Alessandro De Salvo <Alessandro.DeSalvo@roma1.infn.it>.
+"""
+
+if __name__ == '__main__':
+   short_options = "ehn:"
+   long_options = ["export", "help", "name=", "poweroff", "shutdown", "start", "suspend"]
+   action = None
+   name = None
+   conffile = "%s/.ovirtshellrc" % os.environ['HOME']
+   config = ConfigParser.ConfigParser()
+   try:
+      config.read(conffile)
+      if (config.has_section("ovirt-shell")):
+         if (config.has_option("ovirt-shell", "url")):
+             url = config.get("ovirt-shell", "url")
+         if (config.has_option("ovirt-shell", "username")):
+             username = config.get("ovirt-shell", "username")
+         if (config.has_option("ovirt-shell", "password")):
+             password = config.get("ovirt-shell", "password")
+   except:
+      print "Cannot parse config file %s" % conffile
+      sys.exit(1)
+
+   # Parse the command line options
+   try:
+      opts, args = getopt.getopt(sys.argv[1:],
+                   short_options,
+                   long_options,
+                   )
+   except getopt.GetoptError:
+      # Print the help
+      print __HELP__
+      sys.exit(1)
+   for cmd, arg in opts:
+      if (cmd in ('--help',) or cmd in ('-h',)):
+         print __HELP__
+         sys.exit(0)
+      elif (cmd in ('--export',) or cmd in ('-e',)):
+         action = 'export'
+      elif (cmd in ('--name',) or cmd in ('-n',)):
+         name = arg
+      elif (cmd in ('--poweroff',)):
+         action = 'poweroff'
+      elif (cmd in ('--shutdown',)):
+         action = 'shutdown'
+      elif (cmd in ('--start',)):
+         action = 'start'
+      elif (cmd in ('--suspend',)):
+         action = 'suspend'
+
+   if (action):
+      if (url and username and password):
+         ovirt_vmctl = ovirtVMctl(url=url, username=username, password=password)
+         if (action == 'export'):
+            rc = ovirt_vmctl.export(name)
+         else:
+            rc = ovirt_vmctl.power_action(action, name)
+      else:
+         print "url, username or password not specified in config file %s" % conffile
+         rc = 1
+   else:
+      print "No action specified"
+      rc = 1
+   sys.exit(rc)

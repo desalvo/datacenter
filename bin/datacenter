@@ -1,0 +1,213 @@
+#!/usr/bin/env python 
+import json
+import sys
+import getopt
+import commands
+import time
+from multiprocessing import Process
+
+__SSH_CMD__  = "timeout %ss ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s@%s %s"
+__IPMI_CMD__ = "timeout %ss ipmitool -H %s -U %s -P %s %s"
+__NOTIFY_CMD__ = "echo '%s' | mail -s '%s' %s"
+__PING_CMD__ = "timeout %ss ping -c 1 %s"
+
+class datacenter:
+   dc = None
+   default_timeout = "30s"
+   default_retry = 10
+   default_wait = 60
+
+   def __init__(self, config, trial=False):
+      dcjson = open(config).read()
+      self.dc = json.loads(dcjson)
+      self.trial = trial
+
+   def exec_action(self,action):
+      if (not self.dc.has_key("action")):
+         print "No action defined in datacenter"
+         return 1
+
+      actions = self.dc["action"]
+      if (not actions.has_key(action)):
+         print "No %s action defined in datacenter" % action
+         return 1
+
+      stages = actions[action]
+      if (len(stages) < 1):
+         print "No %s stages defined in datacenter" % action
+         return 1
+
+      indx = 0
+      for stage in stages:
+         print
+         print ">>> Executing %s stage %d" % (action,indx)
+         print
+         self.exec_stage(stage, action)
+         indx += 1
+
+   def exec_stage(self, stage, method):
+      self.exec_pool = []
+      for host in stage:
+         action = stage[host]
+         template = action["template"]
+         if (self.dc["template"].has_key(template)):
+            if (action.has_key("ipmihost")):   ipmihost = action["ipmihost"]
+            else:                              ipmihost = None
+            if (action.has_key("ipmiuser")):   ipmiuser = action["ipmiuser"]
+            else:                              ipmiuser = None
+            if (action.has_key("ipmipasswd")): ipmipasswd = action["ipmipasswd"]
+            else:                              ipmipasswd = None
+            p = Process(target=self.run_method, args = (host, self.dc["template"][template], method, ipmihost, ipmiuser, ipmipasswd, action))
+            p.start()
+            self.exec_pool.append(p)
+      for p in self.exec_pool:
+         p.join()
+
+   def run_method(self, host, template, method, ipmihost=None, ipmiuser=None, ipmipasswd=None, action={}, check=True, retry=None, retrywait=None):
+      exec_method = template[method]
+
+      if (exec_method.has_key('timeout')):   timeout = exec_method['timeout']
+      else:                                  timeout = self.default_timeout
+      if (retry):                            maxretry = retry
+      elif (exec_method.has_key('retry')):   maxretry = int(exec_method['retry'])
+      else:                                  maxretry = self.default_retry
+      if (retrywait):                        retry_wait = retrywait
+      if (exec_method.has_key('retrywait')): retry_wait = exec_method['retrywait']
+      else:                                  retry_wait = self.default_wait
+      if (self.trial): retry_wait = 1
+
+      if (check and exec_method.has_key('status')):
+         # Initial status check
+         check = False
+         print "Checking %s" % host
+         sc = self.run_method(host=host, template=template, method=exec_method['status'], ipmihost=ipmihost, ipmiuser=ipmiuser, ipmipasswd=ipmipasswd, action=action, check=check, retry=1)
+      else:
+         sc = 1
+
+      rc  = 0
+      if (sc == 0): 
+         print "Action %s for %s already completed" % (method, host)
+      else:
+         exec_cmd = None
+         if (exec_method["module"] == 'ssh'):
+            sshu  = exec_method['user']
+            sshp  = exec_method['passwd']
+            sshc  = exec_method['cmd']
+            if (exec_method.has_key('sshhost')):
+               exec_cmd = __SSH_CMD__ % (timeout, sshu, exec_method['sshhost'], sshc)
+               exec_cmd = exec_cmd.replace("%sshhost%", exec_method['sshhost'])
+            else:
+               exec_cmd = __SSH_CMD__ % (timeout, sshu, host, sshc)
+            exec_cmd = exec_cmd.replace("%host%",host)
+         elif (exec_method["module"] == 'ipmi'):
+            ipmih = exec_method['host']
+            ipmiu = exec_method['user']
+            ipmip = exec_method['passwd']
+            ipmic = exec_method['cmd']
+            if (ipmihost):   ipmih = ipmih.replace("%ipmihost%",ipmihost)
+            if (ipmiuser):   ipmiu = ipmiu.replace("%ipmiuser%",ipmiuser)
+            if (ipmipasswd): ipmip = ipmip.replace("%ipmipasswd%",ipmipasswd)
+            exec_cmd = __IPMI_CMD__ % (timeout, ipmih, ipmiu, ipmip, ipmic)
+         elif (exec_method["module"] == 'notify'):
+            if (exec_method.has_key('recipients')): recipients = exec_method['recipients']
+            else:                                   recipients = 'root@localhost'
+            date = time.asctime()
+            msg = exec_method['message']
+            subj = exec_method['subject']
+            msg = msg.replace("%date%",date).replace("%host%",host)
+            subj = subj.replace("%date%",date).replace("%host%",host)
+            exec_cmd = __NOTIFY_CMD__ % (msg, subj, recipients) 
+         elif (exec_method["module"] == 'ping'):
+            exec_cmd = __PING_CMD__ % (timeout, host) 
+         else:
+            print "ERROR: undefined module '%s'" % exec_method["module"]
+            rc = 250
+         if (exec_cmd):
+            for action_key in action.keys():
+               exec_cmd = exec_cmd.replace("%%%s%%" % action_key, action[action_key])
+            retryindx = 0
+            if (self.trial):
+               # Trial run, no actions
+               while (retryindx < maxretry):
+                  retryindx += 1
+                  if (retryindx > 1): print "Retrying %s command [%d/%d]" % (method,retryindx,maxretry)
+                  print exec_cmd
+                  if (rc == 0): break
+                  if (retry_wait > 0): time.sleep(retry_wait)
+               retryindx = 0
+               rc = 0
+            else:
+               while (retryindx < maxretry):
+                  # Perform the real command
+                  if (retryindx > 1): print "Retrying %s command [%d/%d]" % (method,retryindx,maxretry)
+                  if (retryindx == 0): print "Executing action %s on %s" % (method, host)
+                  (rc, o) = commands.getstatusoutput(exec_cmd)
+                  if (rc == 0 or rc == 65280):
+                     if (exec_method.has_key('target') and exec_method['target'] != o.split('\n')[0]):
+                        if (retryindx == maxretry): print "ERROR: %s status is %s" % (host, o.split('\n')[0])
+                        rc = 100
+                  else:
+                     print "ERROR: [rc=%d][cmd: %s] %s" % (rc,exec_cmd,o)
+                  if (rc == 0): break
+                  retryindx += 1
+                  if (retry_wait > 0): time.sleep(retry_wait)
+            
+            if (rc == 0):
+               if (exec_method.has_key('status')):
+                  rc = self.run_method(host=host, template=template, method=exec_method['status'], ipmihost=ipmihost, ipmiuser=ipmiuser, ipmipasswd=ipmipasswd, action=action, check=check)
+               if (exec_method.has_key('exec')):
+                  rc = self.run_method(host=host, template=template, method=exec_method['exec'], ipmihost=ipmihost, ipmiuser=ipmiuser, ipmipasswd=ipmipasswd, action=action, check=check)
+               if (exec_method.has_key('wait')):
+                  print "Waiting %ds" % int(exec_method['wait'])
+                  time.sleep(int(exec_method['wait']))
+            else:
+               if (exec_method.has_key('on_failure')):
+                  rc = self.run_method(host=host, template=template, method=exec_method['on_failure'], ipmihost=ipmihost, ipmiuser=ipmiuser, ipmipasswd=ipmipasswd, action=action, check=check)
+         if (rc == 0): print "Action %s executed successfully on %s" % (method, host)
+         else:         print "Action %s failed on %s" % (method, host)
+      return rc
+
+__USAGE__ = """
+datacenter [OPTIONS]
+   -h|--help           Print this help
+   -c|--config <file>  Config file to use, this parameter is needed.
+   -t|--trial          Trial run no actions.
+   --shutdown          Shutdown the datacenter.
+   --startup           Startup the datacenter.
+"""
+
+def usage():
+   print __USAGE__
+
+if __name__ == '__main__':
+   short_opts = "hc:t"
+   long_opts = ["help", "config=", "trial", "shutdown", "startup"]
+   config = None
+   trial = False
+   try:
+      opts, args = getopt.getopt(sys.argv[1:], short_opts, long_opts)
+   except getopt.GetoptError as err:
+      print str(err)
+      usage()
+      sys.exit(2)
+   for o, a in opts:
+      if o in ("-h", "--help"):
+         usage()
+         sys.exit()
+      elif o in ("-c", "--config"):
+         config = a
+      elif o in ("-t", "--trial"):
+         trial = True
+      elif o in ("--shutdown"):
+         action = 'shutdown'
+      elif o in ("--startup"):
+         action = 'startup'
+      else:
+         print "Unknown option"
+   if (config):
+      dc = datacenter(config=config, trial=trial)
+      rc = dc.exec_action(action)
+   else:
+      print "No config specified"
+      rc = 2
+   sys.exit(rc)
