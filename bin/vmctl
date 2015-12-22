@@ -75,9 +75,9 @@ class ovirtVMctl:
          dc = self.api.datacenters.get(id=cluster.data_center.id)
          for sd in dc.storagedomains.list():
             if sd.type_ == "export":
-               export = sd
+               export_domain = sd
  
-         if not export:
+         if not export_domain:
             print("Export domain required, and none found.")
             return 1
 
@@ -93,7 +93,7 @@ class ovirtVMctl:
             time.sleep(1)
 
          newname = "%s-%s" % (vm.name, self.TSTAMP)
-         print("Creating new VM based on snapshot %s [id: %s]" % (SNAPSHOT_NAME,snap_id))
+         print("Creating a new VM based on snapshot %s [id: %s]" % (SNAPSHOT_NAME,snap_id))
          snapshots = params.Snapshots(snapshot=[params.Snapshot(id=snap_id)])
          self.api.vms.add(params.VM(name=newname, snapshots=snapshots, cluster=cluster, template=self.api.templates.get(name="Blank")))
   
@@ -103,7 +103,7 @@ class ovirtVMctl:
             time.sleep(10)
 
          print("Exporting cloned VM to export domain...")
-         self.api.vms.get(name=newname).export(params.Action(storage_domain=export))
+         self.api.vms.get(name=newname).export(params.Action(storage_domain=export_domain))
 
          print("Waiting for export to finish...")
          while self.api.vms.get(name=newname).status.state == "image_locked":
@@ -114,6 +114,36 @@ class ovirtVMctl:
       except Exception as e:
          print 'Failed to Create snapshot %s:\n%s' % (SNAPSHOT_NAME, str(e))
 
+   def listSnaps(self,name):
+      snaps = self.api.vms.get(name).snapshots.list()
+      snapshots = {}
+      for snap in snaps:
+         desc = snap.get_description()
+         if (desc != "Active VM"):
+            snapshots[snap.get_date().strftime("%s")] = (snap.get_id(),desc)
+      snapdates = sorted(snapshots.keys())
+      for snapdate in snapdates:
+         print "%s : %s" % (snapshots[snapdate][0],snapshots[snapdate][1])
+      return 0
+
+   def snapInfo(self,vmname,snapid):
+      snap = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
+      print "DESCRIPTION: %s" % snap.get_description()
+      print "DATE:        %s" % snap.get_date()
+      return 0
+
+   def snapDel(self,vmname,snapid):
+      snap = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
+      rc = snap.delete()
+      return rc
+
+   def listVMs(self):
+      vms = self.api.vms.list()
+      for vm in vms:
+         print "%s" % vm.name
+      return 0
+
+
 
 __HELP__="""vmctl
 Usage: vmctl [OPTION]...
@@ -121,9 +151,13 @@ Usage: vmctl [OPTION]...
 Options:
   --help|-h                         display this help and exit.
   --export|-e                       export the named VMs or all the VMs if --name is omitted
+  --list-vms|-l                     List the VMs
+  --list-snaps|-L                   List the snapshots of a VM
   --name=|-n <VM name>              VM name to process
   --poweroff                        poweroff (stop) the VM
   --shutdown                        shutdown the VM
+  --snap-del|-d <snap-id>           Delete the snapshot snap-id
+  --snap-info|-I <snap-id>          Print the info on snapshot snap-id
   --start                           start the VM
   --suspend                         suspend the VM
 
@@ -131,8 +165,8 @@ Alessandro De Salvo <Alessandro.DeSalvo@roma1.infn.it>.
 """
 
 if __name__ == '__main__':
-   short_options = "ehn:"
-   long_options = ["export", "help", "name=", "poweroff", "shutdown", "start", "suspend"]
+   short_options = "ed:hI:lLn:"
+   long_options = ["export", "help", "list-vms", "list-snaps", "name=", "poweroff", "shutdown", "snap-del=", "snap-info=", "start", "suspend"]
    action = None
    name = None
    conffile = "%s/.ovirtshellrc" % os.environ['HOME']
@@ -166,12 +200,22 @@ if __name__ == '__main__':
          sys.exit(0)
       elif (cmd in ('--export',) or cmd in ('-e',)):
          action = 'export'
+      elif (cmd in ('--list-vms',) or cmd in ('-l',)):
+         action = 'listvms'
+      elif (cmd in ('--list-snaps',) or cmd in ('-L',)):
+         action = 'listsnaps'
       elif (cmd in ('--name',) or cmd in ('-n',)):
          name = arg
       elif (cmd in ('--poweroff',)):
          action = 'poweroff'
       elif (cmd in ('--shutdown',)):
          action = 'shutdown'
+      elif (cmd in ('--snap-del',) or cmd in ('-d',)):
+         action = 'snapdel'
+         snapid = arg
+      elif (cmd in ('--snap-info',) or cmd in ('-I',)):
+         action = 'snapinfo'
+         snapid = arg
       elif (cmd in ('--start',)):
          action = 'start'
       elif (cmd in ('--suspend',)):
@@ -182,6 +226,26 @@ if __name__ == '__main__':
          ovirt_vmctl = ovirtVMctl(url=url, username=username, password=password)
          if (action == 'export'):
             rc = ovirt_vmctl.export(name)
+         elif (action == 'listvms'):
+            rc = ovirt_vmctl.listVMs()
+         elif (action == 'listsnaps'):
+            if (name):
+               rc = ovirt_vmctl.listSnaps(name)
+            else:
+               print "No VM name specified"
+               rc = 1
+         elif (action == 'snapdel'):
+            if (name):
+               rc = ovirt_vmctl.snapDel(name,snapid)
+            else:
+               print "No VM name specified"
+               rc = 1
+         elif (action == 'snapinfo'):
+            if (name):
+               rc = ovirt_vmctl.snapInfo(name,snapid)
+            else:
+               print "No VM name specified"
+               rc = 1
          else:
             rc = ovirt_vmctl.power_action(action, name)
       else:
