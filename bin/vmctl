@@ -134,8 +134,23 @@ class ovirtVMctl:
 
    def snapDel(self,vmname,snapid):
       snap = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
-      rc = snap.delete()
-      return rc
+      print "Deleting snapshot id %s - %s - %s" % (snapid,snap.get_description(),snap.get_date())
+      snap.delete()
+      print "Waiting for snapshot deletion to complete"
+      self.snapWait(vmname,snapid)
+      print "Snapshot deleted"
+      return 0
+
+   def snapWait(self,vmname,snapid):
+      while True:
+         snapshot = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
+         if snapshot:
+            if "ok" in str(snapshot.get_snapshot_status()):
+               break
+            time.sleep(5)
+         else:
+            break
+      return 0
 
    def listVMs(self):
       vms = self.api.vms.list()
