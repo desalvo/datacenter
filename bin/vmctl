@@ -121,31 +121,38 @@ class ovirtVMctl:
          desc = snap.get_description()
          if (desc != "Active VM"):
             snapshots[snap.get_date().strftime("%s")] = (snap.get_id(),desc)
-      snapdates = sorted(snapshots.keys())
-      for snapdate in snapdates:
-         print "%s : %s" % (snapshots[snapdate][0],snapshots[snapdate][1])
+      if (snaps):
+         snapdates = sorted(snapshots.keys())
+         for snapdate in snapdates:
+            print "%s : %s" % (snapshots[snapdate][0],snapshots[snapdate][1])
       return 0
 
    def snapInfo(self,vmname,snapid):
-      snap = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
-      print "DESCRIPTION: %s" % snap.get_description()
-      print "DATE:        %s" % snap.get_date()
+      snaps = self.api.vms.get(vmname).snapshots.list(id=snapid)
+      if (snaps):
+         print "DESCRIPTION: %s" % snaps[0].get_description()
+         print "DATE:        %s" % snaps[0].get_date()
+      else:
+         print "No snapshot found with id %s" % snapid
       return 0
 
    def snapDel(self,vmname,snapid):
-      snap = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
-      print "Deleting snapshot id %s - %s - %s" % (snapid,snap.get_description(),snap.get_date())
-      snap.delete()
-      print "Waiting for snapshot deletion to complete"
-      self.snapWait(vmname,snapid)
-      print "Snapshot deleted"
+      snaps = self.api.vms.get(vmname).snapshots.list(id=snapid)
+      if (snaps):
+         print "Deleting snapshot id %s - %s - %s" % (snapid,snaps[0].get_description(),snaps[0].get_date())
+         snaps[0].delete()
+         print "Waiting for snapshot deletion to complete"
+         self.snapWait(vmname,snapid)
+         print "Snapshot deleted"
+      else:
+         print "No snapshot found with id %s" % snapid
       return 0
 
    def snapWait(self,vmname,snapid):
       while True:
-         snapshot = self.api.vms.get(vmname).snapshots.list(id=snapid)[0]
-         if snapshot:
-            if "ok" in str(snapshot.get_snapshot_status()):
+         snapshots = self.api.vms.get(vmname).snapshots.list(id=snapid)
+         if snapshots:
+            if "ok" in str(snapshots[0].get_snapshot_status()):
                break
             time.sleep(5)
          else:
